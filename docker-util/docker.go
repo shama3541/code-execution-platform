@@ -3,7 +3,10 @@ package dockerutil
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -20,26 +23,63 @@ func NewDockerCLI() (*DockerCLI, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &DockerCLI{Client: cli}, nil
 }
 
-func (d *DockerCLI) RunPython() (string, string, error) {
+func (d *DockerCLI) RunCode(lang string, code string) (string, string, error) {
 	ctx := context.Background()
+	var imageName, fileName, cmd string
 
-	// Pull Python image
-	reader, err := d.Client.ImagePull(ctx, "docker.io/library/python", image.PullOptions{})
+	// Pick image and command based on language
+	switch lang {
+	case "python":
+		imageName = "python:3.12"
+		fileName = "main.py"
+		cmd = fmt.Sprintf("python %s", fileName)
+
+	case "goLang":
+		imageName = "golang:1.22"
+		fileName = "main.go"
+		cmd = fmt.Sprintf("go run %s", fileName)
+
+	case "javascript":
+		imageName = "node:20"
+		fileName = "main.js"
+		cmd = fmt.Sprintf("node %s", fileName)
+
+	default:
+		return "", "", fmt.Errorf("unsupported language: %s", lang)
+	}
+
+	// Create a temp directory for the code
+	tmpDir, err := os.MkdirTemp("", "runner-*")
 	if err != nil {
 		return "", "", err
 	}
-	defer reader.Close()
-	io.Copy(io.Discard, reader) // consume pull output
+	defer os.RemoveAll(tmpDir)
+
+	filePath := filepath.Join(tmpDir, fileName)
+	if err := os.WriteFile(filePath, []byte(code), 0644); err != nil {
+		return "", "", err
+	}
+
+	// Pull image if not present
+	reader, err := d.Client.ImagePull(ctx, imageName, image.PullOptions{})
+	if err != nil {
+		return "", "", err
+	}
+	io.Copy(io.Discard, reader)
+	reader.Close()
 
 	// Create container
 	resp, err := d.Client.ContainerCreate(ctx, &container.Config{
-		Image: "python",
-		Cmd:   []string{"python", "-c", "print('hello world')"},
-	}, nil, nil, nil, "")
+		Image:      imageName,
+		Cmd:        []string{"bash", "-c", cmd},
+		Tty:        false,
+		WorkingDir: "/app",
+	}, &container.HostConfig{
+		Binds: []string{fmt.Sprintf("%s:/app", tmpDir)},
+	}, nil, nil, "")
 	if err != nil {
 		return "", "", err
 	}
@@ -49,7 +89,7 @@ func (d *DockerCLI) RunPython() (string, string, error) {
 		return "", "", err
 	}
 
-	// Wait for container to finish
+	// Wait until container exits
 	statusCh, errCh := d.Client.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
@@ -59,7 +99,7 @@ func (d *DockerCLI) RunPython() (string, string, error) {
 	case <-statusCh:
 	}
 
-	// Capture logs
+	// Get logs
 	out, err := d.Client.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
 		return "", "", err
@@ -67,9 +107,7 @@ func (d *DockerCLI) RunPython() (string, string, error) {
 	defer out.Close()
 
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, out); err != nil {
-		return "", "", err
-	}
+	stdcopy.StdCopy(&stdout, &stderr, out)
 
 	return stdout.String(), stderr.String(), nil
 }

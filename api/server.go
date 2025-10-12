@@ -13,7 +13,7 @@ type Server struct {
 	router     *gin.Engine
 	Queries    *database.Queries
 	TokenMaker token.Maker
-	DockerCli  dockerutil.DockerCLI
+	DockerCli  *dockerutil.DockerCLI
 }
 
 func NewServer(dbconn *sql.DB) *Server {
@@ -22,7 +22,7 @@ func NewServer(dbconn *sql.DB) *Server {
 	return &Server{
 		Queries:    database.New(dbconn),
 		TokenMaker: tokenMaker,
-		DockerCli:  *mydockercli,
+		DockerCli:  mydockercli,
 	}
 }
 
@@ -34,7 +34,7 @@ func (server *Server) CreateServer() *Server {
 	server.router.POST("login", server.LoginHandler)
 
 	authroutes := server.router.Group("/").Use(Middleware(server.TokenMaker))
-	authroutes.GET("/authcheck", server.MessageHandler)
+	authroutes.POST("/run", server.RunProgramHandler)
 
 	return server
 }
