@@ -1,17 +1,40 @@
 package api
 
 import (
+	"database/sql"
+
 	"github.com/gin-gonic/gin"
+	database "github.com/shama3541/code-execution-platform/database/db"
+	dockerutil "github.com/shama3541/code-execution-platform/docker-util"
+	"github.com/shama3541/code-execution-platform/token"
 )
 
 type Server struct {
-	router *gin.Engine
+	router     *gin.Engine
+	Queries    *database.Queries
+	TokenMaker token.Maker
+	DockerCli  dockerutil.DockerCLI
+}
+
+func NewServer(dbconn *sql.DB) *Server {
+	tokenMaker := token.NewJwtMaker("123456")
+	mydockercli, _ := dockerutil.NewDockerCLI()
+	return &Server{
+		Queries:    database.New(dbconn),
+		TokenMaker: tokenMaker,
+		DockerCli:  *mydockercli,
+	}
 }
 
 func (server *Server) CreateServer() *Server {
 	server.router = gin.Default()
 
-	server.router.GET("/messages", server.MessageHandler)
+	server.router.GET("/messages")
+	server.router.POST("/users", server.CreateUser)
+	server.router.POST("login", server.LoginHandler)
+
+	authroutes := server.router.Group("/").Use(Middleware(server.TokenMaker))
+	authroutes.GET("/authcheck", server.MessageHandler)
 
 	return server
 }

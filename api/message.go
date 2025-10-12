@@ -7,7 +7,10 @@ import (
 )
 
 func (server *Server) MessageHandler(ctx *gin.Context) {
+
+	response, _, _ := server.DockerCli.RunPython()
 	ctx.JSON(http.StatusOK, gin.H{
-		"message": "able to hit to end point",
+		"message": response,
 	})
+
 }
