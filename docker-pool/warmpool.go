@@ -1,12 +1,15 @@
 package dockerpool
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type Container struct {
@@ -92,5 +95,92 @@ func (wp *WarmPool) AcquireFromWarmpool(language string) *Container {
 	wp.client.ContainerStart(context.Background(), resp.ID, container.StartOptions{})
 	wp.containers[language] = append(wp.containers[language], NewC)
 	return NewC
+
+}
+
+func (wp *WarmPool) CopyCodeTocontainer(code string, containerID string, destination string) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	Header := &tar.Header{
+		Size: int64(len(code)),
+		Mode: 0644,
+		Name: "main",
+	}
+	if err := tw.WriteHeader(Header); err != nil {
+		return err
+	}
+
+	if _, err := tw.Write([]byte(code)); err != nil {
+		return fmt.Errorf("Error writing file content %v", err)
+	}
+	if err := wp.client.CopyToContainer(context.Background(), containerID, destination, &buf, container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+	}); err != nil {
+		return fmt.Errorf("Error copying file content to the server:%v", err)
+	}
+
+	return nil
+
+}
+
+func getFilextension(lang string) string {
+	extension := ""
+	switch lang {
+	case "python":
+		extension = ".py"
+	case "golang":
+		extension = ".go"
+	case "javascript":
+		extension = ".js"
+	}
+
+	return extension
+}
+
+func getRunCommand(lang, file string) []string {
+	switch lang {
+	case "python":
+		return []string{"python3", file}
+	case "go":
+		return []string{"bash", "-c", fmt.Sprintf("go run %s", file)}
+	case "javascript":
+		return []string{"node", file}
+	default:
+		return []string{"echo", "unsupported language"}
+	}
+}
+
+func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
+	c := wp.AcquireFromWarmpool(language)
+	if c == nil {
+		return "", "", fmt.Errorf("no available containers")
+	}
+
+	tmpFile := "tmp/main" + getFilextension(language)
+	err := wp.CopyCodeTocontainer(code, c.ID, tmpFile)
+	if err != nil {
+		return "", "", fmt.Errorf("error while copying code into the container")
+	}
+	ctx := context.Background()
+	cmd := getRunCommand(language, tmpFile)
+	execResp, err := wp.client.ContainerExecCreate(ctx, c.ID, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	attach, err := wp.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", "", err
+	}
+	defer attach.Close()
+
+	var stdout, stderr bytes.Buffer
+	stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
+	return stdout.String(), stderr.String(), nil
 
 }
