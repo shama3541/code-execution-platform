@@ -105,7 +105,6 @@ func (wp *WarmPool) CopyCodeTocontainer(code string, containerID string, destina
 	tw := tar.NewWriter(&buf)
 	defer tw.Close()
 
-	// Extract directory and filename
 	dir := path.Dir(destination)
 	file := path.Base(destination)
 
@@ -123,7 +122,6 @@ func (wp *WarmPool) CopyCodeTocontainer(code string, containerID string, destina
 		return fmt.Errorf("error writing file content: %v", err)
 	}
 
-	// ✅ Copy to the directory path (must exist)
 	if err := wp.client.CopyToContainer(context.Background(), containerID, dir, &buf, container.CopyToContainerOptions{
 		AllowOverwriteDirWithFile: true,
 	}); err != nil {
@@ -166,10 +164,9 @@ func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 	}
 
 	ctx := context.Background()
-	tmpDir := "/app" // ✅ more reliable than /root or /tmp
+	tmpDir := "/app"
 	tmpFile := tmpDir + "/main" + getFilextension(language)
 
-	// ✅ Ensure directory exists and wait for completion
 	execResp, err := wp.client.ContainerExecCreate(ctx, c.ID, container.ExecOptions{
 		Cmd:          []string{"mkdir", "-p", tmpDir},
 		AttachStdout: true,
@@ -189,16 +186,13 @@ func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 		return "", "", fmt.Errorf("failed to start mkdir exec: %v", err)
 	}
 
-	// Wait for mkdir to finish
 	_, _ = io.Copy(io.Discard, attachResp.Reader)
 
-	// ✅ Now copy code safely
 	err = wp.CopyCodeTocontainer(code, c.ID, tmpFile)
 	if err != nil {
 		return "", "", fmt.Errorf("error while copying code into the container %v", err)
 	}
 
-	// ✅ Execute the code
 	cmd := getRunCommand(language, tmpFile)
 	execResp, err = wp.client.ContainerExecCreate(ctx, c.ID, container.ExecOptions{
 		Cmd:          cmd,
