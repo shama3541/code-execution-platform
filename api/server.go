@@ -35,7 +35,7 @@ func (server *Server) CreateServer() *Server {
 	server.router.GET("/messages")
 	server.router.POST("/users", server.CreateUser)
 	server.router.POST("login", server.LoginHandler)
-
+	server.router.POST("runcode", server.RunProgramHandler)
 	authroutes := server.router.Group("/").Use(Middleware(server.TokenMaker))
 	authroutes.POST("/run", server.RunProgramHandler)
 

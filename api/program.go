@@ -8,7 +8,7 @@ import (
 
 type ProgramRequest struct {
 	Code     string `json:"code" binding:"required"`
-	Language string `json:"language" binding:"required,oneof=python goLang javascript"`
+	Language string `json:"language" binding:"required,oneof=python golang javascript"`
 }
 
 func (server *Server) RunProgramHandler(ctx *gin.Context) {
@@ -19,7 +19,7 @@ func (server *Server) RunProgramHandler(ctx *gin.Context) {
 		})
 		return
 	}
-	stdout, stderr, err := server.DockerCli.RunCode(req.Language, req.Code)
+	stdout, stderr, err := server.Warmpool.RunCode(req.Language, req.Code)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"message": "internal error while running code",

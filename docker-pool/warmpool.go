@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"path"
 	"sync"
 
 	"github.com/docker/docker/api/types/container"
@@ -101,49 +103,55 @@ func (wp *WarmPool) AcquireFromWarmpool(language string) *Container {
 func (wp *WarmPool) CopyCodeTocontainer(code string, containerID string, destination string) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
+	defer tw.Close()
 
-	Header := &tar.Header{
-		Size: int64(len(code)),
+	// Extract directory and filename
+	dir := path.Dir(destination)
+	file := path.Base(destination)
+
+	header := &tar.Header{
+		Name: file,
 		Mode: 0644,
-		Name: "main",
+		Size: int64(len(code)),
 	}
-	if err := tw.WriteHeader(Header); err != nil {
+
+	if err := tw.WriteHeader(header); err != nil {
 		return err
 	}
 
 	if _, err := tw.Write([]byte(code)); err != nil {
-		return fmt.Errorf("Error writing file content %v", err)
+		return fmt.Errorf("error writing file content: %v", err)
 	}
-	if err := wp.client.CopyToContainer(context.Background(), containerID, destination, &buf, container.CopyToContainerOptions{
+
+	// ✅ Copy to the directory path (must exist)
+	if err := wp.client.CopyToContainer(context.Background(), containerID, dir, &buf, container.CopyToContainerOptions{
 		AllowOverwriteDirWithFile: true,
 	}); err != nil {
-		return fmt.Errorf("Error copying file content to the server:%v", err)
+		return fmt.Errorf("error copying file content to the server: %v", err)
 	}
 
 	return nil
-
 }
 
 func getFilextension(lang string) string {
-	extension := ""
 	switch lang {
 	case "python":
-		extension = ".py"
+		return ".py"
 	case "golang":
-		extension = ".go"
+		return ".go"
 	case "javascript":
-		extension = ".js"
+		return ".js"
+	default:
+		return ""
 	}
-
-	return extension
 }
 
 func getRunCommand(lang, file string) []string {
 	switch lang {
 	case "python":
 		return []string{"python3", file}
-	case "go":
-		return []string{"bash", "-c", fmt.Sprintf("go run %s", file)}
+	case "golang":
+		return []string{"go", "run", file}
 	case "javascript":
 		return []string{"node", file}
 	default:
@@ -157,30 +165,57 @@ func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 		return "", "", fmt.Errorf("no available containers")
 	}
 
-	tmpFile := "tmp/main" + getFilextension(language)
-	err := wp.CopyCodeTocontainer(code, c.ID, tmpFile)
-	if err != nil {
-		return "", "", fmt.Errorf("error while copying code into the container")
-	}
 	ctx := context.Background()
-	cmd := getRunCommand(language, tmpFile)
+	tmpDir := "/app" // ✅ more reliable than /root or /tmp
+	tmpFile := tmpDir + "/main" + getFilextension(language)
+
+	// ✅ Ensure directory exists and wait for completion
 	execResp, err := wp.client.ContainerExecCreate(ctx, c.ID, container.ExecOptions{
+		Cmd:          []string{"mkdir", "-p", tmpDir},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create mkdir exec: %v", err)
+	}
+
+	attachResp, err := wp.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to attach mkdir exec: %v", err)
+	}
+	defer attachResp.Close()
+
+	if err := wp.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{}); err != nil {
+		return "", "", fmt.Errorf("failed to start mkdir exec: %v", err)
+	}
+
+	// Wait for mkdir to finish
+	_, _ = io.Copy(io.Discard, attachResp.Reader)
+
+	// ✅ Now copy code safely
+	err = wp.CopyCodeTocontainer(code, c.ID, tmpFile)
+	if err != nil {
+		return "", "", fmt.Errorf("error while copying code into the container %v", err)
+	}
+
+	// ✅ Execute the code
+	cmd := getRunCommand(language, tmpFile)
+	execResp, err = wp.client.ContainerExecCreate(ctx, c.ID, container.ExecOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to create exec command: %v", err)
 	}
 
 	attach, err := wp.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to attach exec: %v", err)
 	}
 	defer attach.Close()
 
 	var stdout, stderr bytes.Buffer
 	stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
 	return stdout.String(), stderr.String(), nil
-
 }
