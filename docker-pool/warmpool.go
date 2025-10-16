@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
 	"sync"
 
 	"github.com/docker/docker/api/types/container"
@@ -103,29 +102,25 @@ func (wp *WarmPool) AcquireFromWarmpool(language string) *Container {
 func (wp *WarmPool) CopyCodeTocontainer(code string, containerID string, destination string) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	defer tw.Close()
 
-	dir := path.Dir(destination)
-	file := path.Base(destination)
-
-	header := &tar.Header{
-		Name: file,
-		Mode: 0644,
+	Header := tar.Header{
 		Size: int64(len(code)),
+		Mode: 0644,
+		Name: "mytarfile",
 	}
 
-	if err := tw.WriteHeader(header); err != nil {
-		return err
+	if err := tw.WriteHeader(&Header); err != nil {
+		return fmt.Errorf("error while writing header:%v", err)
 	}
 
 	if _, err := tw.Write([]byte(code)); err != nil {
-		return fmt.Errorf("error writing file content: %v", err)
+		return fmt.Errorf("error while writing file contents:%v", err)
 	}
 
-	if err := wp.client.CopyToContainer(context.Background(), containerID, dir, &buf, container.CopyToContainerOptions{
+	if err := wp.client.CopyToContainer(context.Background(), containerID, destination, &buf, container.CopyToContainerOptions{
 		AllowOverwriteDirWithFile: true,
 	}); err != nil {
-		return fmt.Errorf("error copying file content to the server: %v", err)
+		return fmt.Errorf("error copying code into container:%v", err)
 	}
 
 	return nil
@@ -159,6 +154,7 @@ func getRunCommand(lang, file string) []string {
 
 func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 	c := wp.AcquireFromWarmpool(language)
+	defer wp.ReleaseContainer(language, c.ID)
 	if c == nil {
 		return "", "", fmt.Errorf("no available containers")
 	}
@@ -212,4 +208,16 @@ func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 	var stdout, stderr bytes.Buffer
 	stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
 	return stdout.String(), stderr.String(), nil
+}
+
+func (wp *WarmPool) ReleaseContainer(language, ContainerID string) error {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	for _, container := range wp.containers[language] {
+		if container.ID == ContainerID {
+			container.InUse = false
+			break
+		}
+	}
+
 }
