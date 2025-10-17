@@ -210,7 +210,7 @@ func (wp *WarmPool) RunCode(language, code string) (string, string, error) {
 	return stdout.String(), stderr.String(), nil
 }
 
-func (wp *WarmPool) ReleaseContainer(language, ContainerID string) error {
+func (wp *WarmPool) ReleaseContainer(language, ContainerID string) {
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 	for _, container := range wp.containers[language] {
